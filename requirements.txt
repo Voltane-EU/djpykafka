@@ -1,0 +1,5 @@
+django
+kafka-python
+pydantic>=1.8
+djutils
+djfapi

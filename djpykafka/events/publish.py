@@ -7,8 +7,9 @@ from pydantic import BaseModel
 from django.dispatch import receiver, Signal
 from django.db.models.signals import post_save, post_delete
 from django.db import models
+from sentry_sdk import Hub, start_span
 from djfapi.utils.pydantic_django import transfer_from_orm
-from djfapi.utils.sentry import instrument_span, span as span_ctx, capture_exception
+from djfapi.utils.sentry import instrument_span, capture_exception
 from djfapi.utils.typing import with_typehint
 from djutils.transaction import on_transaction_complete
 from ..schemas import DataChangeEvent, EventMetadata
@@ -136,8 +137,16 @@ class EventPublisher:
     def message_key(self):
         return bytes(f'{self.data_type}[{self.instance.id}]', 'utf-8')
 
+    def get_message_data(self):
+        return {
+            'topic': self.topic,
+            'key': self.message_key,
+            'headers': [(key, bytes(value, 'utf-8')) for key, value in self.get_headers().items() if value],
+            'value': bytes(self.get_body().json(), 'utf-8'),
+        }
+
     def process(self):
-        span = span_ctx.get()
+        span = Hub.current.scope.span
         span.set_tag('topic', self.topic)
         span.set_tag('routing_key', self.routing_key)
         span.set_tag('sender', self.sender)
@@ -145,12 +154,13 @@ class EventPublisher:
         span.set_tag('orm_model', self.orm_model)
 
         self.logger.debug("Publish DataChangeEvent for %s with schema %s on %r", self.orm_model, self.event_schema, self.topic)
-        message = self.connection.send(
-            topic=self.topic,
-            key=self.message_key,
-            headers=[(key, bytes(value, 'utf-8')) for key, value in self.get_headers().items()],
-            value=bytes(self.get_body().json(), 'utf-8'),
-        )
+
+        data = self.get_message_data()  # prepare data to allow measuring just self.connection.send
+
+        with start_span(op='KafkaProducer.send'):
+            message = self.connection.send(**data)
+            # self.connection.flush(timeout=10)
+
         return message
 
 

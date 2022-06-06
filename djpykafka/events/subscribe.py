@@ -1,21 +1,23 @@
 import warnings
 import logging
 import json
-from typing import Any, Type, TypeVar, Union, Iterable, Optional, Dict
+from typing import Any, Type, TypeVar, Optional
 from pydantic import BaseModel
 from django.db import models
 from djfapi.utils.pydantic_django import transfer_to_orm, TransferAction
-from djfapi.utils.sentry import instrument_span, span as span_ctx
+from djfapi.utils.sentry import instrument_span
 from djfapi.security.jwt import access as access_ctx
 from djfapi.schemas import Access, AccessToken
 from ..handlers.event_consumer import message_handler
 from ..schemas import DataChangeEvent
 try:
-    from sentry_sdk import set_extra
+    from sentry_sdk import set_extra, Hub
 
 except ImportError:
     def set_extra(key, data):
         pass
+
+    Hub = None
 
 
 TBaseModel = TypeVar('TBaseModel', bound=BaseModel)
@@ -94,11 +96,12 @@ class EventSubscription:
             ))
 
         self.is_new_orm_obj = False
-        self.span = span_ctx.get()
-        self.span.set_tag('topic', self.topic)
-        self.span.set_tag('orm_model', self.orm_model)
-        self.span.set_tag('data_op', self.event.data_op)
-        set_extra('body', self.body)
+        if Hub:
+            self.span = Hub.current.scope.span
+            self.span.set_tag('topic', self.topic)
+            self.span.set_tag('orm_model', self.orm_model)
+            self.span.set_tag('data_op', self.event.data_op)
+            set_extra('body', self.body)
 
     def process(self):
         if self.event.data_op == DataChangeEvent.DataOperation.DELETE:

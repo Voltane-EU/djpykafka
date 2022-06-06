@@ -1,6 +1,7 @@
 import logging
 import json
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
+from collections import defaultdict
 from functools import wraps
 from kafka import KafkaConsumer
 from kafka.consumer.fetcher import ConsumerRecord
@@ -28,18 +29,21 @@ class Consumer:
         return cls.consumers[0]
 
     def __init__(self, bootstrap_servers: Union[str, List[str]], client_id: Optional[str] = None, group_id: Optional[str] = None, **kwargs) -> None:
-        self.handlers = {}
+        self.handlers: defaultdict[str, List[Callable[[str], None]]] = defaultdict(list)
         self.bootstrap_servers = bootstrap_servers
         self.client_id = client_id
         self.group_id = group_id
         self._kwargs = kwargs
         self.__class__.consumers.append(self)
+        self.logger = logging.getLogger('djpykafka.event')
 
     def register_handler(self, topic: str, handler: callable):
-        self.handlers[topic] = handler
+        self.handlers[topic].append(handler)
 
     def _dispatch(self, message: ConsumerRecord):
-        self.handlers[message.topic](str(message.value, 'utf-8'))
+        self.logger.info("%s %s offset=%s partition=%s size=%s key=%s", message.topic, message.timestamp, message.offset, message.partition, message.serialized_value_size, message.key)
+        for handler in self.handlers[message.topic]:
+            handler(str(message.value, 'utf-8'))
 
     def run(self):
         self.consumer = KafkaConsumer(

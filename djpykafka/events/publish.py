@@ -105,7 +105,12 @@ class EventPublisher:
         data = self.get_data()
 
         if self.is_changed_included:
-            modified = self.instance.get_dirty_fields(check_relationship=True)
+            try:
+                modified = self.instance.get_dirty_fields(check_relationship=True)
+
+            except AttributeError as error:
+                raise AttributeError("Cannot access get_dirty_fields method. The DirtyFieldsMixin (from django-dirtyfields) is not added to your model.") from error
+
             data['_changed'] = [
                 {
                     'name': field,

@@ -1,13 +1,15 @@
 import logging
-from random import randbytes
-from typing import Tuple, Type, TypeVar, Union, TYPE_CHECKING
+from typing import Type, TypeVar
 from functools import partial, cached_property
 from kafka import KafkaProducer
+from kafka.errors import KafkaTimeoutError
+from kafka.producer.future import FutureRecordMetadata
 from pydantic import BaseModel
 from django.dispatch import receiver, Signal
 from django.db.models.signals import post_save, post_delete
 from django.db import models
 from sentry_sdk import Hub, start_span
+from django.db.utils import OperationalError
 from djfapi.utils.pydantic_django import transfer_from_orm
 from djfapi.utils.sentry import instrument_span, capture_exception
 from djfapi.utils.typing import with_typehint
@@ -137,6 +139,7 @@ class EventPublisher:
     def message_key(self):
         return bytes(f'{self.data_type}[{self.instance.id}]', 'utf-8')
 
+    @instrument_span(op='EventPublisher.get_message_data')
     def get_message_data(self):
         return {
             'topic': self.topic,
@@ -158,8 +161,14 @@ class EventPublisher:
         data = self.get_message_data()  # prepare data to allow measuring just self.connection.send
 
         with start_span(op='KafkaProducer.send'):
-            message = self.connection.send(**data)
-            # self.connection.flush(timeout=10)
+            future_message: FutureRecordMetadata = self.connection.send(**data)
+
+        with start_span(op='FutureRecordMetadata.get'):
+            try:
+                message = future_message.get()
+
+            except KafkaTimeoutError as error:
+                raise OperationalError from error
 
         return message
 

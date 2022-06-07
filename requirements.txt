@@ -2,4 +2,4 @@ django
 kafka-python
 pydantic>=1.8
 djutils
-djfapi
+djfapi>=0.0.6

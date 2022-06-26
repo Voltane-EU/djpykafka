@@ -10,11 +10,13 @@ from django.db.models.signals import post_save, post_delete
 from django.db import models
 from sentry_sdk import Hub, start_span
 from django.db.utils import OperationalError
+from django.utils import timezone
 from djfapi.utils.pydantic_django import transfer_from_orm
 from djfapi.utils.sentry import instrument_span, capture_exception
 from djfapi.utils.typing import with_typehint
 from djutils.transaction import on_transaction_complete
 from ..schemas import DataChangeEvent, EventMetadata
+from ..models import KafkaMixin
 
 
 TBaseModel = TypeVar('TBaseModel', bound=BaseModel)
@@ -65,6 +67,10 @@ class EventPublisher:
     )
     def handle(cls, sender, instance: TDjangoModel, signal: Signal, **kwargs):
         cls.logger.debug("%s.handle from %s with %s for %s", cls, sender, signal, instance)
+        if kwargs.get('update_fields') and 'last_kafka_publish_at' in kwargs['update_fields']:
+            cls.logger.debug("discarding signal as last_kafka_publish_at is set in update_fields")
+            return
+
         instance = cls(sender, instance, signal, **kwargs)
         capture_exception(instance.process)()
 
@@ -153,6 +159,10 @@ class EventPublisher:
             'value': bytes(self.get_body().json(), 'utf-8'),
         }
 
+    def send_callback(self):
+        self.instance.last_kafka_publish_at = timezone.now()
+        self.instance.save(update_fields=['last_kafka_publish_at'])
+
     def process(self):
         span = Hub.current.scope.span
         span.set_tag('topic', self.topic)
@@ -168,14 +178,18 @@ class EventPublisher:
         with start_span(op='KafkaProducer.send'):
             future_message: FutureRecordMetadata = self.connection.send(**data)
 
-        with start_span(op='FutureRecordMetadata.get'):
-            try:
-                message = future_message.get()
+        if isinstance(self.orm_model, KafkaMixin) and self.data_op != DataChangeEvent.DataOperation.DELETE:
+            future_message.add_callback(self.send_callback)
 
-            except KafkaTimeoutError as error:
-                raise OperationalError from error
+        else:
+            with start_span(op='FutureRecordMetadata.get'):
+                try:
+                    future_message.get()
 
-        return message
+                except KafkaTimeoutError as error:
+                    raise OperationalError from error
+
+        return future_message
 
 
 class DataChangePublisher(with_typehint(EventPublisher)):

@@ -163,9 +163,12 @@ class EventPublisher:
             'value': bytes(self.get_body().json(), 'utf-8'),
         }
 
-    def send_callback(self):
+    def send_callback(self, value):
         self.instance.last_kafka_publish_at = timezone.now()
         self.instance.save(update_fields=['last_kafka_publish_at'])
+
+    def error_callback(self, error):
+        self.logger.exception(error)
 
     def process(self):
         span = Hub.current.scope.span
@@ -182,8 +185,9 @@ class EventPublisher:
         with start_span(op='KafkaProducer.send'):
             future_message: FutureRecordMetadata = self.connection.send(**data)
 
-        if isinstance(self.orm_model, KafkaPublishMixin) and self.data_op != DataChangeEvent.DataOperation.DELETE:
+        if issubclass(self.orm_model, KafkaPublishMixin) and self.data_op != DataChangeEvent.DataOperation.DELETE:
             future_message.add_callback(self.send_callback)
+            future_message.add_errback(self.error_callback)
 
         else:
             with start_span(op='FutureRecordMetadata.get'):

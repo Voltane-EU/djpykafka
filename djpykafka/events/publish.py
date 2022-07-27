@@ -1,6 +1,7 @@
 import logging
 from typing import Type, TypeVar
 from functools import partial, cached_property
+import warnings
 from kafka import KafkaProducer
 from kafka.errors import KafkaTimeoutError
 from kafka.producer.future import FutureRecordMetadata
@@ -16,7 +17,7 @@ from djfapi.utils.sentry import instrument_span, capture_exception
 from djfapi.utils.typing import with_typehint
 from djutils.transaction import on_transaction_complete
 from ..schemas import DataChangeEvent, EventMetadata
-from ..models import KafkaMixin
+from ..models import KafkaPublishMixin
 
 
 TBaseModel = TypeVar('TBaseModel', bound=BaseModel)
@@ -54,6 +55,9 @@ class EventPublisher:
 
         cls.register()
         cls.logger.info("Registered EventPublisher %s", cls.__name__)
+
+        if not isinstance(cls.orm_model, KafkaPublishMixin):
+            warnings.warn("Using EventPublisher with a model that doesnt has the KafkaPublishMixin is not recommended")
 
     @classmethod
     def register(cls):
@@ -178,7 +182,7 @@ class EventPublisher:
         with start_span(op='KafkaProducer.send'):
             future_message: FutureRecordMetadata = self.connection.send(**data)
 
-        if isinstance(self.orm_model, KafkaMixin) and self.data_op != DataChangeEvent.DataOperation.DELETE:
+        if isinstance(self.orm_model, KafkaPublishMixin) and self.data_op != DataChangeEvent.DataOperation.DELETE:
             future_message.add_callback(self.send_callback)
 
         else:

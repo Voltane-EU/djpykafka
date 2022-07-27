@@ -1,1 +1,1 @@
-from .kafka_mixin import KafkaMixin
+from .kafka_mixin import KafkaPublishMixin, KafkaSubscribeMixin

@@ -1,6 +1,6 @@
 import logging
 import json
-from typing import Callable, List, Optional, Union
+from typing import Callable, List, Literal, Optional, Union
 from collections import defaultdict
 from functools import wraps
 from kafka import KafkaConsumer
@@ -28,11 +28,12 @@ class Consumer:
 
         return cls.consumers[0]
 
-    def __init__(self, bootstrap_servers: Union[str, List[str]], client_id: Optional[str] = None, group_id: Optional[str] = None, **kwargs) -> None:
+    def __init__(self, bootstrap_servers: Union[str, List[str]], client_id: Optional[str] = None, group_id: Optional[str] = None, auto_offset_reset: Literal['earliest', 'latest'] = 'earliest', **kwargs) -> None:
         self.handlers: defaultdict[str, List[Callable[[str], None]]] = defaultdict(list)
         self.bootstrap_servers = bootstrap_servers
         self.client_id = client_id
         self.group_id = group_id
+        self.auto_offset_reset = auto_offset_reset
         self._kwargs = kwargs
         self.__class__.consumers.append(self)
         self.logger = logging.getLogger('djpykafka.event')
@@ -51,6 +52,7 @@ class Consumer:
             bootstrap_servers=self.bootstrap_servers,
             client_id=self.client_id,
             group_id=self.group_id,
+            auto_offset_reset=self.auto_offset_reset,
             **self._kwargs,
         )
 

@@ -10,6 +10,7 @@ from djfapi.security.jwt import access as access_ctx
 from djfapi.schemas import Access, AccessToken
 from ..handlers.event_consumer import message_handler
 from ..schemas import DataChangeEvent
+from ..models import KafkaSubscribeMixin
 try:
     from sentry_sdk import set_extra, Hub
 
@@ -30,6 +31,7 @@ class Break(Exception):
 
 class EventSubscription:
     __orm_obj: Optional[TDjangoModel] = None
+    logger: logging.Logger
 
     def __init_subclass__(
         cls,
@@ -46,7 +48,7 @@ class EventSubscription:
         cls.topic = topic
         cls.delete_on_status = delete_on_status
         cls.create_only_on_op_create = create_only_on_op_create
-        cls.logger = logging.getLogger(__name__)
+        cls.logger = logging.getLogger(f'{cls.__module__}.{cls.__qualname__}')
 
         message_handler(
             topic=cls.topic,
@@ -66,14 +68,22 @@ class EventSubscription:
             cls.topic,
         )
 
+        if not isinstance(cls.orm_model, KafkaSubscribeMixin):
+            warnings.warn("Using EventSubscription with a model that doesnt has the KafkaSubscribeMixin is not recommended")
+
     @classmethod
     @instrument_span(
         op='EventSubscription',
         description=lambda cls, body, *args, **kwargs: f'{cls}',
     )
     def handle(cls, body):
-        instance = cls(body)
-        instance.process()
+        try:
+            instance = cls(body)
+            instance.process()
+
+        except Exception as error:
+            cls.logger.exception("Error occurred while processing message")
+            raise error
 
     def __init__(self, body):
         self.body = body

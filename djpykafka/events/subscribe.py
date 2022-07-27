@@ -46,7 +46,7 @@ class EventSubscription:
         cls.topic = topic
         cls.delete_on_status = delete_on_status
         cls.create_only_on_op_create = create_only_on_op_create
-        cls.logger = logging.getLogger(f'{cls.__module__}.{cls.__qualname__}')
+        cls.logger = logging.getLogger(__name__)
 
         message_handler(
             topic=cls.topic,
@@ -78,6 +78,15 @@ class EventSubscription:
     def __init__(self, body):
         self.body = body
         self.event = DataChangeEvent.parse_raw(self.body) if isinstance(self.body, (bytes, str)) else DataChangeEvent.parse_obj(self.body)
+
+        self.logger.info(
+            "%s %s eid=%s id=%s flow_id=%s",
+            self.event.data_op.name,
+            self.event.data_type,
+            self.event.metadata.eid,
+            self.event.data.get('id'),
+            self.event.metadata.flow_id,
+        )
 
         if self.event.metadata.user and self.event.metadata.user.uid:
             access_ctx.set(Access(

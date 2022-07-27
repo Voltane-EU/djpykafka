@@ -59,7 +59,7 @@ class EventSubscription:
         cls.is_tenant_bound = hasattr(cls.orm_model, 'tenant_id')
 
         cls.logger.info(
-            "Registered EventSubscription %r with event_schema %r and orm_model on topic %s",
+            "Registered EventSubscription %r with event_schema %r and orm_model %s on topic %s",
             cls,
             cls.event_schema,
             cls.orm_model,

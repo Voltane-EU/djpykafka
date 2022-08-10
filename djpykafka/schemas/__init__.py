@@ -1,1 +1,1 @@
-from .event import EventMetadata, GeneralEvent, DataChangeEvent
+from .event import EventMetadata, GeneralEvent, DataChangeEvent, Version

@@ -12,11 +12,13 @@ from django.db import models
 from sentry_sdk import Hub, start_span
 from django.db.utils import OperationalError
 from django.utils import timezone
-from djfapi.utils.pydantic_django import transfer_from_orm
-from djfapi.utils.sentry import instrument_span, capture_exception
-from djfapi.utils.typing import with_typehint
+from sentry_tools.decorators import instrument_span, capture_exception
+from djdantic.utils.pydantic_django import transfer_from_orm
+from djdantic.utils.typing import with_typehint
 from djutils.transaction import on_transaction_complete
-from ..schemas import DataChangeEvent, EventMetadata
+from dirtyfields import DirtyFieldsMixin
+
+from ..schemas import DataChangeEvent, EventMetadata, Version
 from ..models import KafkaPublishMixin
 
 
@@ -35,7 +37,7 @@ class EventPublisher:
         topic: str,
         data_type: str,
         is_changed_included: bool = False,
-        version: str = 'v1',
+        version: Version = (1, 0, 0),
         type: str = 'data',
         **kwargs,
     ):
@@ -56,8 +58,8 @@ class EventPublisher:
         cls.register()
         cls.logger.info("Registered EventPublisher %s", cls.__name__)
 
-        if not isinstance(cls.orm_model, KafkaPublishMixin):
-            warnings.warn("Using EventPublisher with a model that doesnt has the KafkaPublishMixin is not recommended")
+        if not issubclass(cls.orm_model, KafkaPublishMixin):
+            warnings.warn("Using EventPublisher with a model that doesn't has the djpykafka.models.KafkaPublishMixin is not recommended", stacklevel=2)
 
     @classmethod
     def register(cls):
@@ -84,25 +86,11 @@ class EventPublisher:
         self.signal = signal
         self.kwargs = kwargs
 
-    def get_keys(self):
-        return [
-            self.version,
-            self.type,
-            self.action
-        ]
-
-    @property
-    def routing_key(self):
-        keys = self.get_keys()
-
-        if self.is_tenant_bound:
-            keys.append(self.instance.tenant_id)
-
-        return '.'.join(keys)
-
     @cached_property
     def metadata(self) -> EventMetadata:
-        return EventMetadata()
+        return EventMetadata(
+            version=self.version,
+        )
 
     @cached_property
     def data_op(self) -> DataChangeEvent.DataOperation:
@@ -111,20 +99,31 @@ class EventPublisher:
     def get_data(self) -> dict:
         return transfer_from_orm(self.event_schema, self.instance).dict(by_alias=True)
 
+    @cached_property
+    def modified_fields(self) -> dict:
+        if isinstance(self.instance, DirtyFieldsMixin):
+            return self.instance.get_dirty_fields(check_relationship=True)
+
+        else:
+            warnings.warn("Cannot access get_dirty_fields method. The DirtyFieldsMixin (from django-dirtyfields) is not added to your model.")
+
+        return {}
+
+    @cached_property
+    def is_modified(self) -> bool:
+        if isinstance(self.instance, DirtyFieldsMixin):
+            return bool(self.modified_fields)
+
+        return True
+
     def get_body(self) -> DataChangeEvent:
         data = self.get_data()
 
         if self.is_changed_included:
-            try:
-                modified = self.instance.get_dirty_fields(check_relationship=True)
-
-            except AttributeError as error:
-                raise AttributeError("Cannot access get_dirty_fields method. The DirtyFieldsMixin (from django-dirtyfields) is not added to your model.") from error
-
             data['_changed'] = [
                 {
                     'name': field,
-                } for field, _value in modified.items()
+                } for field, _value in self.modified_fields.items()
             ]
 
         return DataChangeEvent(
@@ -135,11 +134,6 @@ class EventPublisher:
             metadata=self.metadata,
         )
 
-    def get_retry_policy(self):
-        return {
-            'max_retries': 3,
-        }
-
     def get_headers(self):
         return {
             'data_type': self.data_type,
@@ -148,6 +142,7 @@ class EventPublisher:
             'tenant_id': self.instance.tenant_id if self.is_tenant_bound else None,
             'event_id': self.metadata.eid,
             'flow_id': self.metadata.flow_id,
+            'version': str(self.metadata.version) if self.metadata.version else None,
         }
 
     @property
@@ -173,12 +168,14 @@ class EventPublisher:
     def process(self):
         span = Hub.current.scope.span
         span.set_tag('topic', self.topic)
-        span.set_tag('routing_key', self.routing_key)
         span.set_tag('sender', self.sender)
         span.set_tag('signal', self.signal)
         span.set_tag('orm_model', self.orm_model)
 
         self.logger.debug("Publish DataChangeEvent for %s with schema %s on %r", self.orm_model, self.event_schema, self.topic)
+        if not self.is_modified:
+            self.logger.debug("Not publishing DataChangeEvent, not modified")
+            return
 
         data = self.get_message_data()  # prepare data to allow measuring just self.connection.send
 

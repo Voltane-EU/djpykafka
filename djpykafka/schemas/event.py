@@ -2,7 +2,8 @@ from enum import Enum
 import secrets
 from datetime import datetime
 from django.utils import timezone
-from typing import Any, List, Optional
+from django.conf import settings
+from typing import Any, List, Optional, Tuple
 from pydantic import BaseModel, Field
 try:
     import sentry_sdk
@@ -10,7 +11,10 @@ try:
 except ImportError:
     sentry_sdk = None
 
-from djfapi.security.jwt import access as access_ctx
+from djdantic import context
+
+
+CURRENT_SOURCE = getattr(settings, 'APP_NAME', settings.SETTINGS_MODULE.split('.', 1)[0])
 
 
 def default_eid():
@@ -27,21 +31,21 @@ def _get_flow_id():
 
 def _get_uid() -> Optional[str]:
     try:
-        return access_ctx.get().user_id
+        return context.access.get().user_id
 
     except LookupError:
         return
 
 def _get_scopes() -> list:
     try:
-        return access_ctx.get().token.aud
+        return context.access.get().token.aud
 
     except LookupError:
         return []
 
 def _get_roles() -> list:
     try:
-        return access_ctx.get().token.rls
+        return context.access.get().token.rls
 
     except LookupError:
         return []
@@ -54,6 +58,38 @@ def _get_user():
     return EventMetadata.User()
 
 
+def _get_sources():
+    sources = [CURRENT_SOURCE]
+    try:
+        sources += context.access.get().sources
+
+    except LookupError:
+        pass
+
+    return sources
+
+
+def _get_parent_eids():
+    eids = []
+    try:
+        eids += context.access.get().eids
+
+    except LookupError:
+        pass
+
+    return eids
+
+
+class Version(BaseModel):
+    __root__: Tuple[int, int, int]
+
+    def __str__(self):
+        return '.'.join([str(v) for v in self.__root__])
+
+    def __repr__(self):
+        return f'Version({self})'
+
+
 class EventMetadata(BaseModel):
     class User(BaseModel):
         uid: Optional[str] = Field(default_factory=_get_uid)
@@ -64,11 +100,11 @@ class EventMetadata(BaseModel):
     event_type: Optional[str]
     occurred_at: datetime = Field(default_factory=timezone.now)
     # received_at
-    # version
+    version: Optional[Version] = Field()
     user: Optional[User] = Field(default_factory=_get_user)
-    parent_eids: List[str] = Field([])
+    parent_eids: List[str] = Field(default_factory=_get_parent_eids)
+    sources: List[str] = Field(default_factory=_get_sources)
     flow_id: Optional[str] = Field(default_factory=_get_flow_id)
-
 
 
 class GeneralEvent(BaseModel):

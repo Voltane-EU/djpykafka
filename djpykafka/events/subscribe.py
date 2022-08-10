@@ -1,15 +1,15 @@
 import warnings
 import logging
 import json
-from typing import Any, Type, TypeVar, Optional
+from typing import Any, List, Type, TypeVar, Optional
 from pydantic import BaseModel
 from django.db import models
-from djfapi.utils.pydantic_django import transfer_to_orm, TransferAction
-from djfapi.utils.sentry import instrument_span
-from djfapi.security.jwt import access as access_ctx
-from djfapi.schemas import Access, AccessToken
+from sentry_tools.decorators import instrument_span
+from djdantic.utils.pydantic_django import transfer_to_orm, TransferAction
+from djdantic.schemas import Access, AccessToken
+from djdantic import context
 from ..handlers.event_consumer import message_handler
-from ..schemas import DataChangeEvent
+from ..schemas.event import DataChangeEvent, CURRENT_SOURCE
 from ..models import KafkaSubscribeMixin
 try:
     from sentry_sdk import set_extra, Hub
@@ -29,25 +29,19 @@ class Break(Exception):
     pass
 
 
-class EventSubscription:
-    __orm_obj: Optional[TDjangoModel] = None
+class BaseSubscription:
     logger: logging.Logger
+    event_schema: Type[TBaseModel]
+    topic: str
 
-    def __init_subclass__(
+    @classmethod
+    def _init_class(
         cls,
         event_schema: Type[TBaseModel],
-        orm_model: Type[TDjangoModel],
         topic: str,
-        delete_on_status: Optional[Any] = None,
-        create_only_on_op_create: bool = False,
-        **kwargs,
     ):
-        super().__init_subclass__(**kwargs)
         cls.event_schema = event_schema
-        cls.orm_model = orm_model
         cls.topic = topic
-        cls.delete_on_status = delete_on_status
-        cls.create_only_on_op_create = create_only_on_op_create
         cls.logger = logging.getLogger(f'{cls.__module__}.{cls.__qualname__}')
 
         message_handler(
@@ -55,21 +49,12 @@ class EventSubscription:
             transaction_name=f'{cls.__module__}.{cls.__qualname__}',
         )(cls.handle)
 
-        if not hasattr(cls.orm_model, 'updated_at'):
-            warnings.warn("%s has no field 'updated_at'" % cls.orm_model)
-
-        cls.is_tenant_bound = hasattr(cls.orm_model, 'tenant_id')
-
         cls.logger.info(
-            "Registered EventSubscription %r with event_schema %r and orm_model %s on topic %s",
+            "Registered Subscription %r with event_schema %r on topic %s",
             cls,
             cls.event_schema,
-            cls.orm_model,
             cls.topic,
         )
-
-        if not isinstance(cls.orm_model, KafkaSubscribeMixin):
-            warnings.warn("Using EventSubscription with a model that doesnt has the KafkaSubscribeMixin is not recommended")
 
     @classmethod
     @instrument_span(
@@ -79,6 +64,9 @@ class EventSubscription:
     def handle(cls, body):
         try:
             instance = cls(body)
+            if not instance.do_processing:
+                return
+
             instance.process()
 
         except Exception as error:
@@ -88,18 +76,101 @@ class EventSubscription:
     def __init__(self, body):
         self.body = body
         self.event = DataChangeEvent.parse_raw(self.body) if isinstance(self.body, (bytes, str)) else DataChangeEvent.parse_obj(self.body)
+        self.data: TBaseModel = self.event_schema.parse_raw(self.event.data) if isinstance(self.event.data, (bytes, str)) else self.event_schema.parse_obj(self.event.data)
 
         self.logger.info(
-            "%s %s eid=%s id=%s flow_id=%s",
+            "%s %s eid=%s id=%s flow_id=%s sources=%s",
             self.event.data_op.name,
             self.event.data_type,
             self.event.metadata.eid,
-            self.event.data.get('id'),
+            getattr(self.data, 'id'),
             self.event.metadata.flow_id,
+            self.event.metadata.sources,
         )
 
+        if Hub:
+            self.span = Hub.current.scope.span
+            self.span.set_tag('topic', self.topic)
+            self.span.set_tag('data_op', self.event.data_op)
+            set_extra('body', self.body)
+
+    @property
+    def do_processing(self) -> bool:
+        return True
+
+    def process(self):
+        raise NotImplementedError
+
+
+class GenericSubscription(BaseSubscription):
+    def __init_subclass__(
+        cls,
+        event_schema: Type[TBaseModel],
+        topic: str,
+        **kwargs,
+    ):
+        super().__init_subclass__(**kwargs)
+        cls._init_class(
+            event_schema,
+            topic,
+        )
+
+
+class EventSubscription(BaseSubscription):
+    __orm_obj: Optional[TDjangoModel] = None
+    orm_model: Type[TDjangoModel]
+    delete_on_status: Optional[Any]
+    is_tenant_bound: bool
+    create_only_on_op_create: bool
+
+    def __init_subclass__(
+        cls,
+        event_schema: Type[TBaseModel],
+        topic: str,
+        orm_model: Type[TDjangoModel],
+        delete_on_status: Optional[Any] = None,
+        create_only_on_op_create: bool = False,
+        **kwargs,
+    ):
+        super().__init_subclass__(**kwargs)
+        cls._init_class(
+            event_schema,
+            topic,
+            orm_model,
+            delete_on_status,
+            create_only_on_op_create,
+        )
+
+    @classmethod
+    def _init_class(
+        cls,
+        event_schema: Type[TBaseModel],
+        topic: str,
+        orm_model: Type[TDjangoModel],
+        delete_on_status: Optional[Any] = None,
+        create_only_on_op_create: bool = False,
+    ):
+        super()._init_class(
+            event_schema,
+            topic,
+        )
+        cls.orm_model = orm_model
+        cls.delete_on_status = delete_on_status
+        cls.create_only_on_op_create = create_only_on_op_create
+
+        if not hasattr(cls.orm_model, 'updated_at'):
+            warnings.warn("%s has no field 'updated_at'" % cls.orm_model)
+
+        if not isinstance(cls.orm_model, KafkaSubscribeMixin):
+            warnings.warn("Using EventSubscription with a model that doesnt has the KafkaSubscribeMixin is not recommended")
+
+        cls.is_tenant_bound = hasattr(cls.orm_model, 'tenant_id')
+
+    def __init__(self, body):
+        super().__init__(body)
+
         if self.event.metadata.user and self.event.metadata.user.uid:
-            access_ctx.set(Access(
+            context.access.set(Access(
                 token=AccessToken(
                     iss='int',
                     iat=0,
@@ -112,15 +183,14 @@ class EventSubscription:
                     jti='int',
                     crt=False,
                 ),
+                sources=self.event.metadata.sources,
+                eids=[*self.event.metadata.parent_eids, self.event.metadata.eid],
             ))
 
         self.is_new_orm_obj = False
         if Hub:
             self.span = Hub.current.scope.span
-            self.span.set_tag('topic', self.topic)
             self.span.set_tag('orm_model', self.orm_model)
-            self.span.set_tag('data_op', self.event.data_op)
-            set_extra('body', self.body)
 
     def process(self):
         if self.event.data_op == DataChangeEvent.DataOperation.DELETE:
@@ -173,7 +243,6 @@ class EventSubscription:
         pass
 
     def op_create_or_update(self):
-        self.data: TBaseModel = self.event_schema.parse_obj(self.event.data)
         try:
             try:
                 if self.orm_obj.updated_at > self.event.metadata.occurred_at:

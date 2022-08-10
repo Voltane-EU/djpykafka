@@ -1,5 +1,0 @@
-django
-kafka-python
-pydantic>=1.8
-djutils
-djfapi>=0.0.6

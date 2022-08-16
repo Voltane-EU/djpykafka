@@ -4,8 +4,10 @@ import json
 from typing import Any, List, Type, TypeVar, Optional
 from pydantic import BaseModel
 from django.db import models
+from django.db.transaction import atomic
 from sentry_tools.decorators import instrument_span
 from djdantic.utils.pydantic_django import transfer_to_orm, TransferAction
+from djdantic.utils.pydantic_django.pydantic import get_sync_matching_filter, get_sync_matching_values
 from djdantic.schemas import Access, AccessToken
 from djdantic import context
 from ..handlers.event_consumer import message_handler
@@ -61,6 +63,7 @@ class BaseSubscription:
         op='EventSubscription',
         description=lambda cls, body, *args, **kwargs: f'{cls}',
     )
+    @atomic
     def handle(cls, body):
         try:
             instance = cls(body)
@@ -199,14 +202,17 @@ class EventSubscription(BaseSubscription):
         else:
             self.op_create_or_update()
 
+    def _get_orm_obj(self):
+        query = get_sync_matching_filter(self.data)
+        if self.is_tenant_bound:
+            query &= models.Q(tenant_id=self.event.tenant_id)
+
+        return self.orm_model.objects.get(query)
+
     @property
     def orm_obj(self) -> TDjangoModel:
         if not self.__orm_obj:
-            query = models.Q(id=self.event.data.get('id'))
-            if self.is_tenant_bound:
-                query &= models.Q(tenant_id=self.event.tenant_id)
-
-            self.__orm_obj = self.orm_model.objects.get(query)
+            self.__orm_obj = self._get_orm_obj()
             set_extra('orm_obj', self.__orm_obj)
 
         return self.__orm_obj
@@ -216,12 +222,15 @@ class EventSubscription(BaseSubscription):
         self.__orm_obj = value
         set_extra('orm_obj', self.__orm_obj)
 
-    def create_orm_obj(self, data: TBaseModel):
-        fields = {'id': data.id}
+    def _get_create_data(self):
+        fields = {field.field.name: value for field, value in get_sync_matching_values(self.data)} or {'id': self.data.id}
         if self.is_tenant_bound:
             fields['tenant_id'] = self.event.tenant_id
 
-        self.orm_obj = self.orm_model(**fields)
+        return fields
+
+    def create_orm_obj(self):
+        self.orm_obj = self.orm_model(**self._get_create_data())
         self.is_new_orm_obj = True
 
     def op_delete(self):
@@ -257,7 +266,7 @@ class EventSubscription(BaseSubscription):
                 self.logger.warning("Received object to update which does not exist. Discarding change!", stack_info=True)
                 return
 
-            self.create_orm_obj(self.data)
+            self.create_orm_obj()
 
         try:
             self.before_transfer()

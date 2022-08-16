@@ -1,5 +1,5 @@
 import logging
-from typing import Type, TypeVar
+from typing import Optional, Type, TypeVar
 from functools import partial, cached_property
 import warnings
 from kafka import KafkaProducer
@@ -66,7 +66,6 @@ class EventPublisher:
         raise NotImplementedError
 
     @classmethod
-    @on_transaction_complete()
     @instrument_span(
         op='EventPublisher',
         description=lambda cls, sender, instance, signal, **kwargs: f'{cls} for {instance} via {signal}',
@@ -78,13 +77,22 @@ class EventPublisher:
             return
 
         instance = cls(sender, instance, signal, **kwargs)
-        capture_exception(instance.process)()
+        on_transaction_complete()(capture_exception(instance.process))()
 
     def __init__(self, sender, instance: TDjangoModel, signal: Signal, **kwargs):
         self.sender = sender
         self.instance = instance
         self.signal = signal
         self.kwargs = kwargs
+
+        if not self.instance.id:
+            raise ValueError('instance must have an id')
+
+        if self.is_tenant_bound and not self.instance.tenant_id:
+            raise ValueError('Tenant bound instance must have a tenant set')
+
+        self.data = self.get_message_data()  # prepare data to allow measuring just self.connection.send
+        self.is_modified = self.check_if_modified()
 
     @cached_property
     def metadata(self) -> EventMetadata:
@@ -110,7 +118,10 @@ class EventPublisher:
         return {}
 
     @cached_property
-    def is_modified(self) -> bool:
+    def tenant_id(self) -> Optional[str]:
+        return self.instance.tenant_id if self.is_tenant_bound else None
+
+    def check_if_modified(self) -> bool:
         if isinstance(self.instance, DirtyFieldsMixin):
             return bool(self.modified_fields)
 
@@ -123,14 +134,15 @@ class EventPublisher:
             data['_changed'] = [
                 {
                     'name': field,
-                } for field, _value in self.modified_fields.items()
+                    'previous_value': value,
+                } for field, value in self.modified_fields.items()
             ]
 
         return DataChangeEvent(
             data=data,
             data_type=self.data_type,
             data_op=self.data_op,
-            tenant_id=self.instance.tenant_id if self.is_tenant_bound else None,
+            tenant_id=self.tenant_id,
             metadata=self.metadata,
         )
 
@@ -139,7 +151,7 @@ class EventPublisher:
             'data_type': self.data_type,
             'data_op': self.data_op.value,
             'record_id': self.instance.id,
-            'tenant_id': self.instance.tenant_id if self.is_tenant_bound else None,
+            'tenant_id': self.tenant_id,
             'event_id': self.metadata.eid,
             'flow_id': self.metadata.flow_id,
             'version': str(self.metadata.version) if self.metadata.version else None,
@@ -167,20 +179,19 @@ class EventPublisher:
 
     def process(self):
         span = Hub.current.scope.span
-        span.set_tag('topic', self.topic)
-        span.set_tag('sender', self.sender)
-        span.set_tag('signal', self.signal)
-        span.set_tag('orm_model', self.orm_model)
+        if span:
+            span.set_tag('topic', self.topic)
+            span.set_tag('sender', self.sender)
+            span.set_tag('signal', self.signal)
+            span.set_tag('orm_model', self.orm_model)
 
         self.logger.debug("Publish DataChangeEvent for %s with schema %s on %r", self.orm_model, self.event_schema, self.topic)
         if not self.is_modified:
             self.logger.debug("Not publishing DataChangeEvent, not modified")
             return
 
-        data = self.get_message_data()  # prepare data to allow measuring just self.connection.send
-
         with start_span(op='KafkaProducer.send'):
-            future_message: FutureRecordMetadata = self.connection.send(**data)
+            future_message: FutureRecordMetadata = self.connection.send(**self.data)
 
         if issubclass(self.orm_model, KafkaPublishMixin) and self.data_op != DataChangeEvent.DataOperation.DELETE:
             future_message.add_callback(self.send_callback)

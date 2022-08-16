@@ -86,7 +86,7 @@ class BaseSubscription:
             self.event.data_op.name,
             self.event.data_type,
             self.event.metadata.eid,
-            getattr(self.data, 'id'),
+            getattr(self.data, 'id', None),
             self.event.metadata.flow_id,
             self.event.metadata.sources,
         )

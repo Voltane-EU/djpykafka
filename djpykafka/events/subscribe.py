@@ -1,3 +1,4 @@
+from time import sleep
 import warnings
 import logging
 import json
@@ -65,16 +66,11 @@ class BaseSubscription:
     )
     @atomic
     def handle(cls, body):
-        try:
-            instance = cls(body)
-            if not instance.do_processing:
-                return
+        instance = cls(body)
+        if not instance.do_processing:
+            return
 
-            instance.process()
-
-        except Exception as error:
-            cls.logger.exception("Error occurred while processing message")
-            raise error
+        instance.process()
 
     def __init__(self, body):
         self.body = body

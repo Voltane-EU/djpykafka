@@ -1,10 +1,13 @@
 import logging
 import json
-from typing import Callable, List, Literal, Optional, Union
+from threading import Thread, Event
+from time import sleep
+from typing import Callable, Dict, List, Literal, Optional, Union
 from collections import defaultdict
 from functools import wraps
 from kafka import KafkaConsumer
 from kafka.consumer.fetcher import ConsumerRecord
+from django.core.exceptions import ObjectDoesNotExist
 
 try:
     from sentry_sdk.integrations.serverless import serverless_function
@@ -36,7 +39,10 @@ class Consumer:
         self.auto_offset_reset = auto_offset_reset
         self._kwargs = kwargs
         self.__class__.consumers.append(self)
+        self.kafka_consumers: Dict[str, KafkaConsumer] = {}
+        self.threads: Dict[str, Thread] = {}
         self.logger = logging.getLogger('djpykafka.event')
+        self.paused = set()
 
     def register_handler(self, topic: str, handler: callable):
         self.handlers[topic].append(handler)
@@ -47,17 +53,43 @@ class Consumer:
             handler(str(message.value, 'utf-8'))
 
     def run(self):
-        self.consumer = KafkaConsumer(
-            *self.handlers.keys(),
-            bootstrap_servers=self.bootstrap_servers,
-            client_id=self.client_id,
-            group_id=self.group_id,
-            auto_offset_reset=self.auto_offset_reset,
-            **self._kwargs,
-        )
+        for topic in self.handlers.keys():
+            self.kafka_consumers[topic] = KafkaConsumer(
+                topic,
+                bootstrap_servers=self.bootstrap_servers,
+                client_id=f'{self.client_id or ""}-'.lstrip('-') + hex(id(self))[2:],
+                group_id=self.group_id,
+                auto_offset_reset=self.auto_offset_reset,
+                **self._kwargs,
+            )
 
-        for message in self.consumer:
-            self._dispatch(message)
+            self.threads[topic] = Thread(target=self.consume_messages, kwargs={'topic': topic}, daemon=True)
+            self.threads[topic].start()
+
+        while True:
+            if not all(thread.is_alive() for thread in self.threads.values()):
+                break
+
+            sleep(1)
+
+    def consume_messages(self, topic: str):
+        message: ConsumerRecord
+        for message in self.kafka_consumers[topic]:
+            tries = 0
+            while True:
+                tries += 1
+                try:
+                    self._dispatch(message)
+
+                except Exception as error:
+                    self.logger.warning("Error occurred while processing message: %s", error)
+                    if tries >= 20:
+                        raise error
+
+                    sleep(tries * 0.05)
+
+                else:
+                    break
 
 
 def transaction_captured_function(func, transaction_name: Optional[str] = None):

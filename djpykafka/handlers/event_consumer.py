@@ -42,7 +42,6 @@ class Consumer:
         self.kafka_consumers: Dict[str, KafkaConsumer] = {}
         self.threads: Dict[str, Thread] = {}
         self.logger = logging.getLogger('djpykafka.event')
-        self.paused = set()
 
     def register_handler(self, topic: str, handler: callable):
         self.handlers[topic].append(handler)

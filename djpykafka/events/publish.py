@@ -156,6 +156,9 @@ class EventPublisher:
         return self.instance.tenant_id if self.is_tenant_bound else None
 
     def check_if_modified(self) -> bool:
+        if self.signal == post_save and self.kwargs.get('created'):
+            return True
+
         if isinstance(self.instance, DirtyFieldsMixin):
             return bool(self.modified_fields)
 

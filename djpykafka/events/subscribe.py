@@ -251,7 +251,7 @@ class EventSubscription(BaseSubscription):
         try:
             try:
                 if self.orm_obj.updated_at > self.event.metadata.occurred_at:
-                    self.logger.warning("Received data older than last record update. Discarding change!", stack_info=True)
+                    self.logger.warning("Received data older than last record update. Discarding change!")
                     return
 
             except AttributeError:
@@ -259,7 +259,7 @@ class EventSubscription(BaseSubscription):
 
         except self.orm_model.DoesNotExist:
             if self.create_only_on_op_create and self.event.data_op != DataChangeEvent.DataOperation.CREATE:
-                self.logger.warning("Received object to update which does not exist. Discarding change!", stack_info=True)
+                self.logger.warning("Received object to update which does not exist. Discarding change!")
                 return
 
             self.create_orm_obj()
@@ -276,6 +276,6 @@ class EventSubscription(BaseSubscription):
         except AttributeError:
             pass
 
-        transfer_to_orm(self.data, self.orm_obj, action=TransferAction.SYNC)
+        transfer_to_orm(self.data, self.orm_obj, action=TransferAction.SYNC, do_not_save_if_no_change=True)
 
         self.after_transfer()

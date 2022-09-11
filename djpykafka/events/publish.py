@@ -1,14 +1,16 @@
 import logging
-from typing import Callable, List, Optional, Type, TypeVar
+from typing import Callable, Generator, Iterator, List, Optional, Type, TypeVar
 from functools import partial, cached_property
 import warnings
 from kafka import KafkaProducer
 from kafka.errors import KafkaTimeoutError
 from kafka.producer.future import FutureRecordMetadata
 from pydantic import BaseModel
+from pydantic.fields import SHAPE_SINGLETON, SHAPE_LIST
 from django.dispatch import receiver, Signal
 from django.db.models.signals import post_save, post_delete
 from django.db.models.fields.related_descriptors import ReverseManyToOneDescriptor
+from django.db.models.fields import Field as DjangoField
 from django.db import models
 from sentry_sdk import Hub, start_span
 from django.db.utils import OperationalError
@@ -16,6 +18,7 @@ from django.utils import timezone
 from sentry_tools.decorators import instrument_span, capture_exception
 from djdantic.utils.pydantic_django import transfer_from_orm
 from djdantic.utils.typing import with_typehint
+from djdantic.utils.pydantic import get_orm_field_attr
 from djutils.transaction import on_transaction_complete
 from dirtyfields import DirtyFieldsMixin
 
@@ -121,9 +124,27 @@ class EventPublisher:
         return transfer_from_orm(self.event_schema, self.instance).dict(by_alias=True)
 
     @cached_property
+    def _relevant_model_fields(self) -> Iterator[DjangoField]:
+        def get_fields(model: BaseModel):
+            for field in model.__fields__.values():
+                orm_field = get_orm_field_attr(field.field_info, 'orm_field')
+                if not orm_field:
+                    continue
+
+                if field.shape == SHAPE_SINGLETON:
+                    if issubclass(field.type_, BaseModel):
+                        yield from get_fields(field.type_)
+
+                    else:
+                        yield orm_field.field
+
+        yield from get_fields(self.event_schema)
+
+    @cached_property
     def modified_fields(self) -> dict:
         if isinstance(self.instance, DirtyFieldsMixin):
-            return self.instance.get_dirty_fields(check_relationship=True)
+            relevant_fields = [field.name for field in self._relevant_model_fields]
+            return {field: value for field, value in self.instance.get_dirty_fields(check_relationship=True).items() if field in relevant_fields}
 
         else:
             warnings.warn("Cannot access get_dirty_fields method. The DirtyFieldsMixin (from django-dirtyfields) is not added to your model.")

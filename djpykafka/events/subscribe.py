@@ -1,7 +1,5 @@
-from time import sleep
 import warnings
 import logging
-import json
 from typing import Any, List, Type, TypeVar, Optional
 from pydantic import BaseModel
 from django.db import models
@@ -11,8 +9,9 @@ from djdantic.utils.pydantic_django import transfer_to_orm, TransferAction
 from djdantic.utils.pydantic_django.pydantic import get_sync_matching_filter, get_sync_matching_values
 from djdantic.schemas import Access, AccessToken
 from djdantic import context
+from dirtyfields import DirtyFieldsMixin
 from ..handlers.event_consumer import message_handler
-from ..schemas.event import DataChangeEvent, CURRENT_SOURCE
+from ..schemas.event import DataChangeEvent
 from ..models import KafkaSubscribeMixin
 try:
     from sentry_sdk import set_extra, Hub
@@ -276,6 +275,6 @@ class EventSubscription(BaseSubscription):
         except AttributeError:
             pass
 
-        transfer_to_orm(self.data, self.orm_obj, action=TransferAction.SYNC, do_not_save_if_no_change=True)
+        transfer_to_orm(self.data, self.orm_obj, action=TransferAction.SYNC, do_not_save_if_no_change=issubclass(self.orm_model, DirtyFieldsMixin))
 
         self.after_transfer()

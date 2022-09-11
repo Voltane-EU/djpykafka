@@ -126,17 +126,19 @@ class EventPublisher:
     @cached_property
     def _relevant_model_fields(self) -> Iterator[DjangoField]:
         def get_fields(model: BaseModel):
-            for field in model.__fields__.values():
+            for key, field in model.__fields__.items():
+                if field.shape != SHAPE_SINGLETON:
+                    continue
+
+                if issubclass(field.type_, BaseModel):
+                    yield from get_fields(field.type_)
+                    continue
+
                 orm_field = get_orm_field_attr(field.field_info, 'orm_field')
                 if not orm_field:
                     continue
 
-                if field.shape == SHAPE_SINGLETON:
-                    if issubclass(field.type_, BaseModel):
-                        yield from get_fields(field.type_)
-
-                    else:
-                        yield orm_field.field
+                yield orm_field.field
 
         yield from get_fields(self.event_schema)
 

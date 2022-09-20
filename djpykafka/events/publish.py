@@ -225,7 +225,7 @@ class EventPublisher:
             span.set_tag('orm_model', self.orm_model)
 
         self.logger.debug("Publish DataChangeEvent for %s with schema %s on %r", self.orm_model, self.event_schema, self.topic)
-        if not self.is_modified:
+        if not self.is_modified and self.data_op != DataChangeEvent.DataOperation.DELETE:
             self.logger.debug("Not publishing DataChangeEvent, not modified")
             return
 

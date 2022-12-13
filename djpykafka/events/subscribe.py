@@ -238,6 +238,8 @@ class EventSubscription(BaseSubscription):
         except self.orm_model.DoesNotExist:
             pass
 
+        self.orm_obj = None
+
     def before_transfer(self):
         if self.delete_on_status and self.data.status == self.delete_on_status:
             self.op_delete()

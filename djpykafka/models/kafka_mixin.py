@@ -17,7 +17,7 @@ class KafkaPublishMixin(models.Model):
 
 
 class KafkaSubscribeMixin(models.Model):
-    updated_at = models.DateTimeField(auto_now=True)
+    updated_at = models.DateTimeField()
 
     class Meta:
         abstract = True

@@ -41,3 +41,37 @@ class MyModelPublisher(
 ):
     pass
 ```
+
+## AsyncAPI Docs
+
+This feature is WIP.
+
+Install djpykafka with the extra `docs` (`pip install djpykafka[docs]`) and add the following snippets to your `asgi.py`:
+
+```python
+from starlette.responses import HTMLResponse, JSONResponse
+from starlette.routing import Route
+from fastapi.encoders import jsonable_encoder
+from asyncapi_docgen.docs import get_asyncapi_ui_html
+
+# ! Import after django's get_asgi_application()
+
+from djpykafka.docs.asyncapi import get_asyncapi
+
+
+def asyncapi_html(request):
+    return HTMLResponse(get_asyncapi_ui_html(asyncapi_url='/asyncapi.json'))
+
+
+def asyncapi_json(request):
+    return JSONResponse(jsonable_encoder(get_asyncapi(), by_alias=True, exclude_none=True))
+
+
+app = FastAPI(
+    ...,
+    routes=[
+        Route('/asyncapi', asyncapi_html),
+        Route('/asyncapi.json', asyncapi_json),
+    ],
+)
+```

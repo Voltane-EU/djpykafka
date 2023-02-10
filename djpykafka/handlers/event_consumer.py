@@ -74,7 +74,6 @@ class Consumer:
                 bootstrap_servers=self.bootstrap_servers,
                 client_id=self.client_id,
                 group_id=self.group_id,
-                auto_offset_reset=self.auto_offset_reset,
                 **self._kwargs,
             )
 

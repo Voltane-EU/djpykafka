@@ -1,13 +1,15 @@
 import logging
 import json
-from threading import Thread, Event
+from threading import Thread
+from functools import partial
 from time import sleep
 from typing import Callable, Dict, List, Literal, Optional, Union
 from collections import defaultdict
 from functools import wraps
 from kafka import KafkaConsumer
+from kafka.coordinator.consumer import ConsumerCoordinator
 from kafka.consumer.fetcher import ConsumerRecord
-from django.core.exceptions import ObjectDoesNotExist
+from django.conf import settings
 
 try:
     from sentry_sdk.integrations.serverless import serverless_function
@@ -31,13 +33,27 @@ class Consumer:
 
         return cls.consumers[0]
 
-    def __init__(self, bootstrap_servers: Union[str, List[str]], client_id: Optional[str] = None, group_id: Optional[str] = None, auto_offset_reset: Literal['earliest', 'latest'] = 'earliest', **kwargs) -> None:
+    def __init__(self, bootstrap_servers: Optional[Union[str, List[str]]] = None, client_id: Optional[str] = None, group_id: Optional[str] = None, auto_offset_reset: Literal['earliest', 'latest'] = 'earliest', **kwargs) -> None:
         self.handlers: defaultdict[str, List[Callable[[str], None]]] = defaultdict(list)
-        self.bootstrap_servers = bootstrap_servers
-        self.client_id = client_id
+        self.bootstrap_servers = getattr(settings, 'BROKER_URL', bootstrap_servers)
+        if not self.bootstrap_servers:
+            raise ValueError('bootstrap_servers or settings.BROKER_URL must be given')
+
+        self.client_id = (f'{client_id}-' if client_id else '') + hex(id(self))[2:]
         self.group_id = group_id
-        self.auto_offset_reset = auto_offset_reset
-        self._kwargs = kwargs
+        self._kwargs = {
+            'auto_offset_reset': getattr(settings, 'BROKER_AUTO_OFFSET_RESET', auto_offset_reset),
+            'request_timeout_ms': getattr(settings, 'BROKER_REQUEST_TIMEOUT', None),
+            'session_timeout_ms': getattr(settings, 'BROKER_SESSION_TIMEOUT', None),
+            'security_protocol': getattr(settings, 'BROKER_SECURITY_PROTOCOL', None),
+            'sasl_mechanism': getattr(settings, 'BROKER_SASL_MECHANISM', None),
+            'sasl_plain_username': getattr(settings, 'BROKER_SASL_PLAIN_USERNAME', None),
+            'sasl_plain_password': getattr(settings, 'BROKER_SASL_PLAIN_PASSWORD', None),
+            'ssl_cafile': getattr(settings, 'BROKER_SSL_CERTFILE', None),
+            'max_poll_records': getattr(settings, 'BROKER_MAX_POLL_RECORDS', None),
+            'max_poll_interval_ms': getattr(settings, 'BROKER_MAX_POLL_INTERVAL_MS', None),
+            **kwargs,
+        }
         self.__class__.consumers.append(self)
         self.kafka_consumers: Dict[str, KafkaConsumer] = {}
         self.threads: Dict[str, Thread] = {}
@@ -56,7 +72,7 @@ class Consumer:
             self.kafka_consumers[topic] = KafkaConsumer(
                 topic,
                 bootstrap_servers=self.bootstrap_servers,
-                client_id=f'{self.client_id or ""}-'.lstrip('-') + hex(id(self))[2:],
+                client_id=self.client_id,
                 group_id=self.group_id,
                 auto_offset_reset=self.auto_offset_reset,
                 **self._kwargs,
@@ -69,7 +85,10 @@ class Consumer:
             if not all(thread.is_alive() for thread in self.threads.values()):
                 break
 
-            sleep(1)
+            for consumer in self.kafka_consumers.values():
+                consumer._coordinator.ensure_active_group()
+
+            sleep(5)
 
     def consume_messages(self, topic: str):
         message: ConsumerRecord

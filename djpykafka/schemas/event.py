@@ -1,10 +1,10 @@
 from enum import Enum
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone as tz
 from django.utils import timezone
 from django.conf import settings
 from typing import Any, List, Optional, Tuple
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 try:
     import sentry_sdk
 
@@ -105,6 +105,13 @@ class EventMetadata(BaseModel):
     parent_eids: List[str] = Field(default_factory=_get_parent_eids)
     sources: List[str] = Field(default_factory=_get_sources)
     flow_id: Optional[str] = Field(default_factory=_get_flow_id)
+
+    @validator('occurred_at')
+    def force_timezone(cls, value: datetime):
+        if not value.tzinfo:
+            return value.replace(tzinfo=tz.utc)
+
+        return value
 
 
 class GeneralEvent(BaseModel):

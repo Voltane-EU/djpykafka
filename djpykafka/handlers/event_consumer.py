@@ -1,7 +1,7 @@
 import logging
 import json
 from threading import Thread
-from functools import partial
+from secrets import token_hex
 from time import sleep
 from typing import Callable, Dict, List, Literal, Optional, Union
 from collections import defaultdict
@@ -72,7 +72,7 @@ class Consumer:
             self.kafka_consumers[topic] = KafkaConsumer(
                 topic,
                 bootstrap_servers=self.bootstrap_servers,
-                client_id=self.client_id,
+                client_id=f'{self.client_id}-{token_hex(4)}-{topic}',
                 group_id=self.group_id,
                 **self._kwargs,
             )
@@ -92,18 +92,23 @@ class Consumer:
     def consume_messages(self, topic: str):
         message: ConsumerRecord
         for message in self.kafka_consumers[topic]:
-            tries = 0
+            tries: int = 0
+            _prev_error: Optional[Exception] = None
             while True:
                 tries += 1
                 try:
                     self._dispatch(message)
 
                 except Exception as error:
-                    self.logger.warning("Error occurred while processing message: %s", error)
-                    if tries >= 20:
-                        raise error
+                    _prev_error = error
+                    if not _prev_error or str(error) != str(_prev_error):
+                        self.logger.exception(error)
 
-                    sleep(tries * 0.05)
+                    if tries >= 25:
+                        sleep(5)
+
+                    else:
+                        sleep(tries ** 1.425 * 0.05)
 
                 else:
                     break

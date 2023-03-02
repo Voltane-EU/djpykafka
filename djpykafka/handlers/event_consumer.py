@@ -7,7 +7,7 @@ from typing import Callable, Dict, List, Literal, Optional, Union
 from collections import defaultdict
 from functools import wraps
 from kafka import KafkaConsumer
-from kafka.coordinator.consumer import ConsumerCoordinator
+from kafka.errors import KafkaError, CommitFailedError
 from kafka.consumer.fetcher import ConsumerRecord
 from django.conf import settings
 
@@ -69,14 +69,6 @@ class Consumer:
 
     def run(self):
         for topic in self.handlers.keys():
-            self.kafka_consumers[topic] = KafkaConsumer(
-                topic,
-                bootstrap_servers=self.bootstrap_servers,
-                client_id=f'{self.client_id}-{token_hex(4)}-{topic}',
-                group_id=self.group_id,
-                **self._kwargs,
-            )
-
             self.threads[topic] = Thread(target=self.consume_messages, kwargs={'topic': topic}, daemon=True)
             self.threads[topic].start()
 
@@ -90,19 +82,31 @@ class Consumer:
             sleep(5)
 
     def consume_messages(self, topic: str):
+        self.kafka_consumers[topic] = KafkaConsumer(
+            topic,
+            bootstrap_servers=self.bootstrap_servers,
+            client_id=f'{self.client_id}-{token_hex(4)}-{topic}',
+            group_id=self.group_id,
+            **self._kwargs,
+        )
+
         message: ConsumerRecord
         for message in self.kafka_consumers[topic]:
             tries: int = 0
-            _prev_error: Optional[Exception] = None
             while True:
                 tries += 1
                 try:
                     self._dispatch(message)
 
+                except CommitFailedError:
+                    # Topic partition offset commit failed
+                    raise
+
+                except KafkaError:
+                    raise
+
                 except Exception as error:
-                    _prev_error = error
-                    if not _prev_error or str(error) != str(_prev_error):
-                        self.logger.exception(error)
+                    self.logger.exception(error)
 
                     if tries >= 25:
                         sleep(5)

@@ -1,11 +1,16 @@
 import os
+from typing import Optional
 from collections import defaultdict
 from asyncapi_docgen.constants import REF_PREFIX
 from asyncapi_docgen.models import Channel, Operation, Message
 from pydantic import create_model, Field
 from pydantic.schema import get_model_name_map, get_flat_models_from_models
 from fastapi.utils import get_model_definitions
+from fastapi.encoders import jsonable_encoder
+from asyncapi_docgen.docs import get_asyncapi_ui_html
 from asyncapi_docgen.utils import get_asyncapi as _get_asyncapi
+from starlette.responses import HTMLResponse, JSONResponse
+from starlette.routing import Route
 from django.conf import settings
 from ..events.publish import EventPublisher
 from ..schemas.event import DataChangeEvent
@@ -42,3 +47,19 @@ def get_asyncapi():
             'schemas': schemas,
         }
     )
+
+
+def get_routes(path: str = '/asyncapi', json_path: Optional[str] = None):
+    if not json_path:
+        json_path = f'{path}.json'
+
+    def asyncapi_html(request):
+        return HTMLResponse(get_asyncapi_ui_html(asyncapi_url=json_path))
+
+    def asyncapi_json(request):
+        return JSONResponse(jsonable_encoder(get_asyncapi(), by_alias=True, exclude_none=True))
+
+    return [
+        Route(path, asyncapi_html),
+        Route(json_path, asyncapi_json),
+    ]

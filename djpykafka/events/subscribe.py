@@ -4,6 +4,8 @@ from typing import Any, List, Type, TypeVar, Optional
 from pydantic import BaseModel
 from django.db import models
 from django.db.transaction import atomic
+from sentry_tools import set_extra
+from sentry_tools.span import set_tag, set_data
 from sentry_tools.decorators import instrument_span
 from djdantic.utils.pydantic_django import transfer_to_orm, TransferAction
 from djdantic.utils.pydantic_django.pydantic import get_sync_matching_filter, get_sync_matching_values
@@ -13,14 +15,6 @@ from dirtyfields import DirtyFieldsMixin
 from ..handlers.event_consumer import message_handler
 from ..schemas.event import DataChangeEvent
 from ..models import KafkaSubscribeMixin
-try:
-    from sentry_sdk import set_extra, Hub
-
-except ImportError:
-    def set_extra(key, data):
-        pass
-
-    Hub = None
 
 
 TBaseModel = TypeVar('TBaseModel', bound=BaseModel)
@@ -86,11 +80,9 @@ class BaseSubscription:
             self.event.metadata.sources,
         )
 
-        if Hub:
-            self.span = Hub.current.scope.span
-            self.span.set_tag('topic', self.topic)
-            self.span.set_tag('data_op', self.event.data_op)
-            set_extra('body', self.body)
+        set_tag('topic', self.topic)
+        set_tag('data_op', self.event.data_op)
+        set_extra('body', self.body)
 
     @property
     def do_processing(self) -> bool:
@@ -186,9 +178,7 @@ class EventSubscription(BaseSubscription):
             ))
 
         self.is_new_orm_obj = False
-        if Hub:
-            self.span = Hub.current.scope.span
-            self.span.set_tag('orm_model', self.orm_model)
+        set_tag('orm_model', self.orm_model)
 
     def process(self):
         if self.event.data_op == DataChangeEvent.DataOperation.DELETE:

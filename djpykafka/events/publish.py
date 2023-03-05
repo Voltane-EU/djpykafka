@@ -1,18 +1,19 @@
 import logging
-from typing import Callable, Generator, Iterator, List, Optional, Type, TypeVar
-from functools import partial, cached_property
 import warnings
+from typing import Iterator, List, Optional, Type, TypeVar
+from functools import partial, cached_property
 from kafka import KafkaProducer
 from kafka.errors import KafkaTimeoutError
 from kafka.producer.future import FutureRecordMetadata
 from pydantic import BaseModel
-from pydantic.fields import SHAPE_SINGLETON, SHAPE_LIST
+from pydantic.fields import SHAPE_SINGLETON
 from django.dispatch import receiver, Signal
 from django.db.models.signals import post_save, post_delete
 from django.db.models.fields.related_descriptors import ReverseManyToOneDescriptor
 from django.db.models.fields import Field as DjangoField
 from django.db import models
-from sentry_sdk import Hub, start_span
+from django.conf import settings
+from sentry_tools.span import set_tag, start_span
 from django.db.utils import OperationalError
 from django.utils import timezone
 from sentry_tools.decorators import instrument_span, capture_exception
@@ -28,6 +29,22 @@ from ..models import KafkaPublishMixin
 
 TBaseModel = TypeVar('TBaseModel', bound=BaseModel)
 TDjangoModel = TypeVar('TDjangoModel', bound=models.Model)
+
+
+def get_connection():
+    if not settings.BROKER_PRODUCER_CONNECTION:
+        settings.BROKER_PRODUCER_CONNECTION = KafkaProducer(
+            bootstrap_servers=settings.BROKER_URL,
+            acks=settings.BROKER_ACKS,
+            request_timeout_ms=settings.BROKER_REQUEST_TIMEOUT,
+            security_protocol=settings.BROKER_SECURITY_PROTOCOL,
+            sasl_mechanism=settings.BROKER_SASL_MECHANISM,
+            sasl_plain_username=settings.BROKER_SASL_PLAIN_USERNAME,
+            sasl_plain_password=settings.BROKER_SASL_PLAIN_PASSWORD,
+            ssl_cafile=settings.BROKER_SSL_CERTFILE,
+        )
+
+    return settings.BROKER_PRODUCER_CONNECTION
 
 
 class EventPublisher:
@@ -47,7 +64,7 @@ class EventPublisher:
         cls,
         orm_model: Type[TDjangoModel],
         event_schema: Type[TBaseModel],
-        connection: KafkaProducer,
+        connection: Optional[KafkaProducer],
         topic: str,
         data_type: str,
         is_changed_included: bool = False,
@@ -57,6 +74,9 @@ class EventPublisher:
         **kwargs,
     ):
         super().__init_subclass__()
+        if not connection:
+            connection = get_connection()
+
         cls.connection = connection
 
         cls.topic = topic
@@ -217,12 +237,10 @@ class EventPublisher:
         self.logger.exception(error)
 
     def process(self):
-        span = Hub.current.scope.span
-        if span:
-            span.set_tag('topic', self.topic)
-            span.set_tag('sender', self.sender)
-            span.set_tag('signal', self.signal)
-            span.set_tag('orm_model', self.orm_model)
+        set_tag('topic', self.topic)
+        set_tag('sender', self.sender)
+        set_tag('signal', self.signal)
+        set_tag('orm_model', self.orm_model)
 
         self.logger.debug("Publish DataChangeEvent for %s with schema %s on %r", self.orm_model, self.event_schema, self.topic)
         if not self.is_modified and self.data_op != DataChangeEvent.DataOperation.DELETE:

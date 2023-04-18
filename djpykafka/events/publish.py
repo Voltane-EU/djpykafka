@@ -21,10 +21,15 @@ from djdantic.utils.pydantic_django import transfer_from_orm
 from djdantic.utils.typing import with_typehint
 from djdantic.utils.pydantic import get_orm_field_attr
 from djutils.transaction import on_transaction_complete
-from dirtyfields import DirtyFieldsMixin
-
 from ..schemas import DataChangeEvent, EventMetadata, Version
 from ..models import KafkaPublishMixin
+
+try:
+    from dirtyfields import DirtyFieldsMixin
+
+except ImportError:
+    class DirtyFieldsMixin:
+        pass
 
 
 TBaseModel = TypeVar('TBaseModel', bound=BaseModel)

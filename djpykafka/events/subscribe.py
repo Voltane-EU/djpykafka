@@ -15,10 +15,17 @@ from djdantic.utils.pydantic_django import transfer_to_orm, TransferAction
 from djdantic.utils.pydantic_django.pydantic import get_sync_matching_filter, get_sync_matching_values
 from djdantic.schemas import Access, AccessToken
 from djdantic import context
-from dirtyfields import DirtyFieldsMixin
 from ..handlers.event_consumer import message_handler
 from ..schemas.event import DataChangeEvent
 from ..models import KafkaSubscribeMixin
+
+
+try:
+    from dirtyfields import DirtyFieldsMixin
+
+except ImportError:
+    class DirtyFieldsMixin:
+        pass
 
 
 TBaseModel = TypeVar('TBaseModel', bound=BaseModel)

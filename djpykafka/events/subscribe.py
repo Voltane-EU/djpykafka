@@ -79,11 +79,18 @@ class BaseSubscription:
     def parse_event(self) -> DataChangeEvent:
         return DataChangeEvent.parse_raw(self.body) if isinstance(self.body, (bytes, str)) else DataChangeEvent.parse_obj(self.body)
 
+    def parse_data(self) -> TBaseModel:
+        if isinstance(self.event.data, (bytes, str)):
+            return self.event_schema.parse_raw(self.event.data)
+
+        else:
+            return self.event_schema.parse_obj(self.event.data)
+
     def __init__(self, message: ConsumerRecord):
         self.message = message
         self.body = self.parse_body()
         self.event = self.parse_event()
-        self.data: TBaseModel = self.event_schema.parse_raw(self.event.data) if isinstance(self.event.data, (bytes, str)) else self.event_schema.parse_obj(self.event.data)
+        self.data: Optional[TBaseModel] = self.parse_data()
 
         self.logger.info(
             "%s %s eid=%s id=%s flow_id=%s sources=%s",

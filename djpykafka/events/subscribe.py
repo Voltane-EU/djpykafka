@@ -1,11 +1,15 @@
 import warnings
 import logging
-from typing import Any, List, Type, TypeVar, Optional
+import json
+import re
+from typing import Any, Type, TypeVar, Optional, Union
+from datetime import datetime
 from pydantic import BaseModel
 from django.db import models
 from django.db.transaction import atomic
+from kafka.consumer.fetcher import ConsumerRecord
 from sentry_tools import set_extra
-from sentry_tools.span import set_tag, set_data
+from sentry_tools.span import set_tag
 from sentry_tools.decorators import instrument_span
 from djdantic.utils.pydantic_django import transfer_to_orm, TransferAction
 from djdantic.utils.pydantic_django.pydantic import get_sync_matching_filter, get_sync_matching_values
@@ -29,19 +33,23 @@ class BaseSubscription:
     logger: logging.Logger
     event_schema: Type[TBaseModel]
     topic: str
+    topic_use_regex: bool = False
 
     @classmethod
     def _init_class(
         cls,
         event_schema: Type[TBaseModel],
         topic: str,
+        topic_use_regex: bool = False,
     ):
         cls.event_schema = event_schema
         cls.topic = topic
+        cls.topic_use_regex = topic_use_regex
         cls.logger = logging.getLogger(f'{cls.__module__}.{cls.__qualname__}')
 
         message_handler(
             topic=cls.topic,
+            is_topic_regex=cls.topic_use_regex,
             transaction_name=f'{cls.__module__}.{cls.__qualname__}',
         )(cls.handle)
 
@@ -58,16 +66,23 @@ class BaseSubscription:
         description=lambda cls, body, *args, **kwargs: f'{cls}',
     )
     @atomic
-    def handle(cls, body):
-        instance = cls(body)
+    def handle(cls, message: ConsumerRecord):
+        instance = cls(message)
         if not instance.do_processing:
             return
 
         instance.process()
 
-    def __init__(self, body):
-        self.body = body
-        self.event = DataChangeEvent.parse_raw(self.body) if isinstance(self.body, (bytes, str)) else DataChangeEvent.parse_obj(self.body)
+    def parse_body(self) -> Union[str, bytes, dict, Any]:
+        return str(self.message.value, 'utf-8')
+
+    def parse_event(self) -> DataChangeEvent:
+        return DataChangeEvent.parse_raw(self.body) if isinstance(self.body, (bytes, str)) else DataChangeEvent.parse_obj(self.body)
+
+    def __init__(self, message: ConsumerRecord):
+        self.message = message
+        self.body = self.parse_body()
+        self.event = self.parse_event()
         self.data: TBaseModel = self.event_schema.parse_raw(self.event.data) if isinstance(self.event.data, (bytes, str)) else self.event_schema.parse_obj(self.event.data)
 
         self.logger.info(
@@ -97,13 +112,49 @@ class GenericSubscription(BaseSubscription):
         cls,
         event_schema: Type[TBaseModel],
         topic: str,
+        topic_use_regex: bool = False,
         **kwargs,
     ):
         super().__init_subclass__(**kwargs)
         cls._init_class(
             event_schema,
             topic,
+            topic_use_regex,
         )
+
+
+class DebeziumSubscription(BaseSubscription):
+    def __init_subclass__(
+        cls,
+        event_schema: Type[TBaseModel],
+        topic: str,
+        topic_use_regex: bool = False,
+        **kwargs,
+    ):
+        super().__init_subclass__(**kwargs)
+        cls._init_class(
+            event_schema,
+            topic,
+            topic_use_regex,
+        )
+
+    def parse_body(self):
+        contents = json.loads(super().parse_body())
+
+        return {
+            'data': contents['after'],
+            'data_type': 'res.partner',
+            'data_op': contents['op'].upper(),
+            'tenant_id': re.search(self.topic, self.message.topic).group('tenant_id'),
+            'metadata': {
+                'version': (1, 0, 0),
+                'event_type': 'debezium',
+                'occurred_at': datetime.fromtimestamp(contents['ts_ms'] / 1000),
+                'user': None,
+                'sources': [],
+                'parent_eids': [],
+            }
+        }
 
 
 class EventSubscription(BaseSubscription):

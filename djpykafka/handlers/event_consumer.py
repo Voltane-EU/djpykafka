@@ -1,11 +1,13 @@
 import logging
 import json
+import re
+import inspect
 from threading import Thread
 from secrets import token_hex
 from time import sleep
 from typing import Callable, Dict, List, Literal, Optional, Union
 from collections import defaultdict
-from functools import wraps
+from functools import wraps, lru_cache
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError, CommitFailedError
 from kafka.consumer.fetcher import ConsumerRecord
@@ -23,6 +25,19 @@ except ImportError:
 _logger = logging.getLogger(__name__)
 
 
+class Handler:
+    def __init__(self, topic: str, is_topic_regex: bool = False, *, handler: Callable[[str], None]):
+        self.topic = topic
+        self.is_topic_regex = is_topic_regex
+        self.handler = handler
+
+        parameters = list(inspect.signature(handler).parameters.values())
+        if parameters[1 if parameters[0].name in ('cls', 'self') else 0].annotation is not ConsumerRecord:
+            self.handler = lambda message: handler(str(message.value, 'utf-8'))
+
+    def handle(self, message: ConsumerRecord):
+        return self.handler(message)
+
 class Consumer:
     consumers = []
 
@@ -34,7 +49,7 @@ class Consumer:
         return cls.consumers[0]
 
     def __init__(self, bootstrap_servers: Optional[Union[str, List[str]]] = None, client_id: Optional[str] = None, group_id: Optional[str] = None, auto_offset_reset: Literal['earliest', 'latest'] = 'earliest', **kwargs) -> None:
-        self.handlers: defaultdict[str, List[Callable[[str], None]]] = defaultdict(list)
+        self.handlers: defaultdict[str, List[Handler]] = defaultdict(list)
         self.bootstrap_servers = getattr(settings, 'BROKER_URL', bootstrap_servers)
         if not self.bootstrap_servers:
             raise ValueError('bootstrap_servers or settings.BROKER_URL must be given')
@@ -59,18 +74,34 @@ class Consumer:
         self.threads: Dict[str, Thread] = {}
         self.logger = logging.getLogger('djpykafka.event')
 
-    def register_handler(self, topic: str, handler: callable):
-        self.handlers[topic].append(handler)
+    def register_handler(self, topic: str, handler: callable, is_topic_regex: bool = False):
+        self.handlers[topic].append(Handler(topic, is_topic_regex, handler=handler))
+
+    @lru_cache(maxsize=128)
+    def get_handlers(self, topic: str):
+        return list(self._get_handlers(topic))
+
+    def _get_handlers(self, topic: str):
+        for handlers in self.handlers.values():
+            for handler in handlers:
+                if handler.is_topic_regex:
+                    if re.search(handler.topic, topic):
+                        yield handler
+
+                elif handler.topic == topic:
+                    yield handler
 
     def _dispatch(self, message: ConsumerRecord):
         self.logger.info("%s %s offset=%s partition=%s size=%s key=%s", message.topic, message.timestamp, message.offset, message.partition, message.serialized_value_size, message.key)
-        for handler in self.handlers[message.topic]:
-            handler(str(message.value, 'utf-8'))
+        for handler in self.get_handlers(message.topic):
+            handler.handle(message)
 
     def run(self):
         for topic in self.handlers.keys():
             self.threads[topic] = Thread(target=self.consume_messages, kwargs={'topic': topic}, daemon=True)
             self.threads[topic].start()
+
+        sleep(5) # XXX ONLY TEST
 
         while True:
             if not all(thread.is_alive() for thread in self.threads.values()):
@@ -82,16 +113,26 @@ class Consumer:
             sleep(5)
 
     def consume_messages(self, topic: str):
-        self.kafka_consumers[topic] = KafkaConsumer(
-            topic,
+        consumer = self.kafka_consumers[topic] = KafkaConsumer(
             bootstrap_servers=self.bootstrap_servers,
             client_id=f'{self.client_id}-{token_hex(4)}-{topic}',
             group_id=self.group_id,
             **self._kwargs,
         )
 
+        all_topics = consumer.topics()
+        topics = set()
+        for handler in self.handlers[topic]:
+            if handler.is_topic_regex:
+                topics.update(t for t in all_topics if re.search(handler.topic, t))
+
+            else:
+                topics.add(handler.topic)
+
+        consumer.subscribe(list(topics))
+
         message: ConsumerRecord
-        for message in self.kafka_consumers[topic]:
+        for message in consumer:
             tries: int = 0
             while True:
                 tries += 1
@@ -157,12 +198,13 @@ def transaction_captured_function(func, transaction_name: Optional[str] = None):
 def _message_handler(
     topic: str,
     consumer: Optional[Consumer],
+    is_topic_regex: bool = False,
 ):
     if not consumer:
         consumer = Consumer.get_consumer()
 
     def wrapper(func):
-        consumer.register_handler(topic=topic, handler=func)
+        consumer.register_handler(topic=topic, is_topic_regex=is_topic_regex, handler=func)
 
         return func
 
@@ -173,12 +215,14 @@ if Hub:
     def message_handler(
         topic: str,
         consumer: Optional[Consumer] = None,
-        transaction_name: Optional[str] = None
+        transaction_name: Optional[str] = None,
+        is_topic_regex: bool = False,
     ):
         def decorator(func):
             return _message_handler(
                 topic=topic,
                 consumer=consumer,
+                is_topic_regex=is_topic_regex,
             )(serverless_function(transaction_captured_function(func, transaction_name=transaction_name)))
 
         return decorator

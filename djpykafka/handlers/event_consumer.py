@@ -1,3 +1,4 @@
+import itertools
 import logging
 import json
 import re
@@ -37,6 +38,16 @@ class Handler:
 
     def handle(self, message: ConsumerRecord):
         return self.handler(message)
+
+    def match(self, topic: str) -> bool:
+        if self.is_topic_regex:
+            if re.search(self.topic, topic):
+                return True
+
+        elif self.topic == topic:
+            return True
+
+        return False
 
 class Consumer:
     consumers = []
@@ -79,17 +90,7 @@ class Consumer:
 
     @lru_cache(maxsize=128)
     def get_handlers(self, topic: str):
-        return list(self._get_handlers(topic))
-
-    def _get_handlers(self, topic: str):
-        for handlers in self.handlers.values():
-            for handler in handlers:
-                if handler.is_topic_regex:
-                    if re.search(handler.topic, topic):
-                        yield handler
-
-                elif handler.topic == topic:
-                    yield handler
+        return [handler for handler in itertools.chain(*self.handlers.values()) if handler.match(topic)]
 
     def _dispatch(self, message: ConsumerRecord):
         self.logger.info("%s %s offset=%s partition=%s size=%s key=%s", message.topic, message.timestamp, message.offset, message.partition, message.serialized_value_size, message.key)
@@ -100,8 +101,6 @@ class Consumer:
         for topic in self.handlers.keys():
             self.threads[topic] = Thread(target=self.consume_messages, kwargs={'topic': topic}, daemon=True)
             self.threads[topic].start()
-
-        sleep(5) # XXX ONLY TEST
 
         while True:
             if not all(thread.is_alive() for thread in self.threads.values()):
@@ -120,16 +119,14 @@ class Consumer:
             **self._kwargs,
         )
 
-        all_topics = consumer.topics()
-        topics = set()
-        for handler in self.handlers[topic]:
-            if handler.is_topic_regex:
-                topics.update(t for t in all_topics if re.search(handler.topic, t))
+        try:
+            next(filter(lambda h: h.is_topic_regex, self.handlers[topic]))
 
-            else:
-                topics.add(handler.topic)
+        except StopIteration:
+            consumer.subscribe(topics=[handler.topic for handler in self.handlers[topic]])
 
-        consumer.subscribe(list(topics))
+        else:
+            consumer.subscribe(pattern='^(' + ')|('.join([handler.topic if handler.is_topic_regex else f'^{re.escape(handler.topic)}$' for handler in self.handlers[topic]]) + ')$')
 
         message: ConsumerRecord
         for message in consumer:

@@ -32,6 +32,9 @@ TBaseModel = TypeVar('TBaseModel', bound=BaseModel)
 TDjangoModel = TypeVar('TDjangoModel', bound=models.Model)
 
 
+DATA_OPERATIONS = {o.value: o for o in DataChangeEvent.DataOperation}
+
+
 class Break(Exception):
     pass
 
@@ -158,7 +161,7 @@ class DebeziumSubscription(BaseSubscription):
         return {
             'data': contents['after'],
             'data_type': 'res.partner',
-            'data_op': contents['op'].upper(),
+            'data_op': DATA_OPERATIONS.get(contents['op'].upper(), DataChangeEvent.DataOperation.SNAPSHOT),
             'tenant_id': re.search(self.topic, self.message.topic).group('tenant_id'),
             'metadata': {
                 'version': (1, 0, 0),

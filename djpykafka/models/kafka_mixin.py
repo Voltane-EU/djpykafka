@@ -1,5 +1,5 @@
 from typing import Optional, TYPE_CHECKING
-from datetime import timedelta
+from datetime import timedelta, datetime
 from django.db import models
 from djdantic import BaseModel
 from kafka import KafkaProducer
@@ -15,8 +15,8 @@ class KafkaPublishMixin(models.Model):
     _kafka_connection: Optional[KafkaProducer]
     KAFKA_PUBLISH_TIMEDELTA = timedelta(seconds=10)
 
-    last_kafka_publish_at = models.DateTimeField(null=True, blank=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    last_kafka_publish_at: datetime = models.DateTimeField(null=True, blank=True)
+    updated_at: datetime = models.DateTimeField(auto_now=True)
 
     @classmethod
     def _init_publisher(cls):
@@ -63,7 +63,7 @@ class KafkaPublishMixin(models.Model):
 
 
 class KafkaSubscribeMixin(models.Model):
-    updated_at = models.DateTimeField()
+    updated_at: datetime = models.DateTimeField()
 
     class Meta:
         abstract = True

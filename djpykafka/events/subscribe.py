@@ -90,7 +90,7 @@ class BaseSubscription:
         return DataChangeEvent.parse_raw(self.body) if isinstance(self.body, (bytes, str)) else DataChangeEvent.parse_obj(self.body)
 
     def parse_data(self) -> TBaseModel:
-        if self.body['data_op'] == DataChangeEvent.DataOperation.DELETE and not self.event.data:
+        if self.event.data_op == DataChangeEvent.DataOperation.DELETE and not self.event.data:
             return 
             
         if isinstance(self.event.data, (bytes, str)):

@@ -158,18 +158,37 @@ class DebeziumSubscription(BaseSubscription):
             topic_use_regex,
         )
 
+    def parse_event(self) -> DataChangeEvent:
+        if self.body == 'null':  # Debezium Tombstone events
+            return DataChangeEvent(data_op=DataChangeEvent.DataOperation.DELETE, data_type='tombstone')
+
+        return super().parse_event()
+
     def parse_body(self):
         contents = json.loads(super().parse_body())
 
+        if not contents:
+            event_type = 'tombstone'
+            data = ''
+            operation = DataChangeEvent.DataOperation.DELETE
+            ts = datetime.now()
+
+        else:
+            data = contents.get('data')
+            event_type = 'debezium'
+            operation = DATA_OPERATIONS.get(
+                contents['op'].upper(), DataChangeEvent.DataOperation.SNAPSHOT)
+            ts = datetime.fromtimestamp(contents['ts_ms'] / 1000)
+
         return {
-            'data': contents['after'],
+            'data': data,
             'data_type': 'res.partner',
-            'data_op': DATA_OPERATIONS.get(contents['op'].upper(), DataChangeEvent.DataOperation.SNAPSHOT),
+            'data_op': operation,
             'tenant_id': re.search(self.topic, self.message.topic).group('tenant_id'),
             'metadata': {
                 'version': (1, 0, 0),
-                'event_type': 'debezium',
-                'occurred_at': datetime.fromtimestamp(contents['ts_ms'] / 1000),
+                'event_type': event_type,
+                'occurred_at': ts,
                 'user': None,
                 'sources': [],
                 'parent_eids': [],

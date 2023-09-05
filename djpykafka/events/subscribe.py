@@ -160,7 +160,10 @@ class DebeziumSubscription(BaseSubscription):
 
     def parse_event(self) -> DataChangeEvent:
         if self.body == 'null':  # Debezium Tombstone events
-            return DataChangeEvent(data_op=DataChangeEvent.DataOperation.DELETE, data_type='debezium_tombstone')
+            return DataChangeEvent(
+                data_op=DataChangeEvent.DataOperation.DELETE,
+                data_type='debezium_tombstone',
+            )
 
         return super().parse_event()
 
@@ -177,7 +180,9 @@ class DebeziumSubscription(BaseSubscription):
             data = contents.get('data')
             event_type = 'debezium'
             operation = DATA_OPERATIONS.get(
-                contents['op'].upper(), DataChangeEvent.DataOperation.SNAPSHOT)
+                contents['op'].upper(),
+                DataChangeEvent.DataOperation.SNAPSHOT,
+            )
             timestamp = datetime.fromtimestamp(contents['ts_ms'] / 1000)
 
         return {

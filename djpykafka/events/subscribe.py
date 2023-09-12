@@ -177,7 +177,7 @@ class DebeziumSubscription(BaseSubscription):
             timestamp = datetime.now()
 
         else:
-            data = contents.get('data')
+            data = contents['after']
             event_type = 'debezium'
             operation = DATA_OPERATIONS.get(
                 contents['op'].upper(),

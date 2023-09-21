@@ -181,9 +181,8 @@ class Consumer:
                     else:
                         sleep(tries**1.425 * 0.05)
 
-                    if settings.DJPYKAFKA_EXIT_ON_EXCEPTION and tries > getattr(
-                        settings, 'DJPYKAFKA_EXCEPTION_EXIT_RETRIES', 10
-                    ):
+                    if getattr(settings, 'DJPYKAFKA_EXIT_ON_EXCEPTION', False) and \
+                       tries > getattr(settings, 'DJPYKAFKA_EXCEPTION_EXIT_RETRIES', 10):
                         raise
 
                 else:

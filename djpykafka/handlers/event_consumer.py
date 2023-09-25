@@ -49,6 +49,7 @@ class Handler:
 
         return False
 
+
 class Consumer:
     consumers = []
 
@@ -59,7 +60,14 @@ class Consumer:
 
         return cls.consumers[0]
 
-    def __init__(self, bootstrap_servers: Optional[Union[str, List[str]]] = None, client_id: Optional[str] = None, group_id: Optional[str] = None, auto_offset_reset: Literal['earliest', 'latest'] = 'earliest', **kwargs) -> None:
+    def __init__(
+        self,
+        bootstrap_servers: Optional[Union[str, List[str]]] = None,
+        client_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        auto_offset_reset: Literal['earliest', 'latest'] = 'earliest',
+        **kwargs,
+    ) -> None:
         self.handlers: defaultdict[str, List[Handler]] = defaultdict(list)
         self.bootstrap_servers = getattr(settings, 'BROKER_URL', bootstrap_servers)
         if not self.bootstrap_servers:
@@ -93,7 +101,15 @@ class Consumer:
         return [handler for handler in itertools.chain(*self.handlers.values()) if handler.match(topic)]
 
     def _dispatch(self, message: ConsumerRecord):
-        self.logger.info("%s %s offset=%s partition=%s size=%s key=%s", message.topic, message.timestamp, message.offset, message.partition, message.serialized_value_size, message.key)
+        self.logger.info(
+            "%s %s offset=%s partition=%s size=%s key=%s",
+            message.topic,
+            message.timestamp,
+            message.offset,
+            message.partition,
+            message.serialized_value_size,
+            message.key,
+        )
         for handler in self.get_handlers(message.topic):
             handler.handle(message)
 
@@ -126,11 +142,21 @@ class Consumer:
             consumer.subscribe(topics=[handler.topic for handler in self.handlers[topic]])
 
         else:
-            consumer.subscribe(pattern='^(' + ')|('.join([handler.topic if handler.is_topic_regex else f'^{re.escape(handler.topic)}$' for handler in self.handlers[topic]]) + ')$')
+            consumer.subscribe(
+                pattern='^('
+                + ')|('.join(
+                    [
+                        handler.topic if handler.is_topic_regex else f'^{re.escape(handler.topic)}$'
+                        for handler in self.handlers[topic]
+                    ]
+                )
+                + ')$'
+            )
 
         message: ConsumerRecord
         for message in consumer:
             tries: int = 0
+            previous_error: Optional[Exception] = None
             while True:
                 tries += 1
                 try:
@@ -144,13 +170,20 @@ class Consumer:
                     raise
 
                 except Exception as error:
-                    self.logger.exception(error)
+                    if str(error) != str(previous_error):
+                        self.logger.exception(error)
+
+                    previous_error = error
 
                     if tries >= 25:
                         sleep(5)
 
                     else:
-                        sleep(tries ** 1.425 * 0.05)
+                        sleep(tries**1.425 * 0.05)
+
+                    if getattr(settings, 'DJPYKAFKA_EXIT_ON_EXCEPTION', False) and \
+                       tries > getattr(settings, 'DJPYKAFKA_EXCEPTION_EXIT_RETRIES', 10):
+                        raise
 
                 else:
                     break
@@ -186,7 +219,12 @@ def transaction_captured_function(func, transaction_name: Optional[str] = None):
         with Hub.current.start_transaction(transaction):
             result = func(*args, **kwargs)
 
-        _logger.debug("Logged message handling with trace_id=%s, span_id=%s, id=%s", transaction.trace_id, transaction.span_id, last_event_id())
+        _logger.debug(
+            "Logged message handling with trace_id=%s, span_id=%s, id=%s",
+            transaction.trace_id,
+            transaction.span_id,
+            last_event_id(),
+        )
         return result
 
     return wrapper
@@ -209,6 +247,7 @@ def _message_handler(
 
 
 if Hub:
+
     def message_handler(
         topic: str,
         consumer: Optional[Consumer] = None,

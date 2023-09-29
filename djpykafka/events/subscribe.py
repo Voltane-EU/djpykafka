@@ -84,7 +84,7 @@ class BaseSubscription:
         instance.process()
 
     def parse_body(self) -> Union[str, bytes, dict, Any]:
-        return str(self.message.value, 'utf-8')
+        return str(self.message.value, 'utf-8') if isinstance(self.message.value, (bytes, bytearray, str)) else self.message.value
 
     def parse_event(self) -> DataChangeEvent:
         return DataChangeEvent.parse_raw(self.body) if isinstance(self.body, (bytes, str)) else DataChangeEvent.parse_obj(self.body)
@@ -168,7 +168,8 @@ class DebeziumSubscription(BaseSubscription):
         return super().parse_event()
 
     def parse_body(self):
-        contents = json.loads(super().parse_body())
+        message = super().parse_body()
+        contents = json.loads(message) if isinstance(message, str) else message
 
         if not contents:
             event_type = 'debezium_tombstone'
